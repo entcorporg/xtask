@@ -8,7 +8,6 @@ use clap::{Parser, Subcommand};
     about = "Outil de scaffolding pour le crate `api`",
     version
 )]
-
 pub struct Cli {
     /// Pour `new ...` : racine du repo cible (sinon détection automatique
     /// en remontant depuis le répertoire courant, à la recherche de

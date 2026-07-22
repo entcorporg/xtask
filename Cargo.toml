@@ -1,6 +1,6 @@
 [package]
 name = "cargo-xtask"
-version = "0.1.2"
+version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/entcorporg/xtask.git"
 license = "LicenseRef-Proprietary"
