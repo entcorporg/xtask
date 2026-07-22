@@ -35,7 +35,6 @@ pub fn run(yes: bool) -> Result<()> {
 
     println!("xtask v{current_version} — recherche d'une mise à jour sur {owner}/{name}...");
 
-    // Génère dynamiquement le dossier interne selon l'OS (ex: cargo-xtask-x86_64-unknown-linux-gnu/cargo-xtask)
     let target = self_update::get_target();
     let bin_path = format!("{BIN_NAME}-{target}/{BIN_NAME}");
 
@@ -43,8 +42,7 @@ pub fn run(yes: bool) -> Result<()> {
         .repo_owner(owner)
         .repo_name(name)
         .bin_name(BIN_NAME)
-        .target_name(BIN_NAME)
-        .bin_path_in_archive(&bin_path) // <-- Indique le bon sous-dossier interne
+        .bin_path_in_archive(&bin_path) // <-- Indique à self_update d'aller chercher le binaire dans le sous-dossier
         .show_download_progress(true)
         .no_confirm(yes)
         .current_version(current_version)
