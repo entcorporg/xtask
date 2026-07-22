@@ -1,6 +1,6 @@
 [package]
 name = "cargo-xtask"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 repository = "https://github.com/entcorporg/xtask.git"
 license = "LicenseRef-Proprietary"
@@ -20,6 +20,8 @@ self_update = { version = "0.44", default-features = false, features = [
     "reqwest",
     "rustls",
 ] }
+tar = "0.4"
+xz2 = "0.1"
 
 
 # The profile that 'dist' will build with

@@ -1,7 +1,11 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::Path,
+    process::Command,
 };
+
+use tar::Archive;
+use xz2::read::XzDecoder;
 
 use anyhow::{Context, Result, bail};
 use self_update::cargo_crate_version;
@@ -63,13 +67,59 @@ fn replace_binary(new_exe: &Path, install_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn temp_install_path(current_exe: &Path) -> Result<PathBuf> {
-    let parent = current_exe.parent().context("le binaire courant n'a pas de dossier parent")?;
-    let file_name = current_exe
-        .file_name()
-        .context("le binaire courant n'a pas de nom de fichier")?
-        .to_string_lossy();
-    Ok(parent.join(format!("{file_name}.new")))
+fn install_and_replace(new_exe: &Path, install_path: &Path) -> Result<()> {
+    let temp_install_path = install_path.with_extension("new");
+    replace_binary(new_exe, &temp_install_path)?;
+
+    #[cfg(unix)]
+    {
+        let helper = std::env::current_exe().context("impossible de localiser le binaire courant")?;
+        let _ = Command::new(&helper)
+            .arg("self-update-helper")
+            .arg(&temp_install_path)
+            .arg(install_path)
+            .spawn()
+            .context("impossible de démarrer le helper de mise à jour")?;
+    }
+
+    Ok(())
+}
+
+fn extract_archive_file(archive_path: &Path, into_dir: &Path, file_to_extract: &str) -> Result<()> {
+    let archive_file = fs::File::open(archive_path).with_context(|| {
+        format!("impossible d'ouvrir l'archive {}", archive_path.display())
+    })?;
+    let mut archive = Archive::new(XzDecoder::new(archive_file));
+    let mut matching_entry = None;
+
+    for entry in archive.entries().context("impossible de lire l'archive tar.xz")? {
+        let entry = entry.context("impossible de lire une entrée de l'archive")?;
+        let entry_path = entry
+            .path()
+            .context("impossible de lire le chemin d'une entrée")?
+            .to_path_buf();
+        if entry_path == Path::new(file_to_extract) {
+            matching_entry = Some(entry);
+            break;
+        }
+    }
+
+    let mut matching_entry = matching_entry.context(format!(
+        "impossible de trouver {} dans l'archive {}",
+        file_to_extract,
+        archive_path.display()
+    ))?;
+
+    matching_entry.unpack_in(into_dir).with_context(|| {
+        format!(
+            "impossible d'extraire {} depuis {} vers {}",
+            file_to_extract,
+            archive_path.display(),
+            into_dir.display()
+        )
+    })?;
+
+    Ok(())
 }
 
 pub fn run(yes: bool) -> Result<()> {
@@ -79,62 +129,87 @@ pub fn run(yes: bool) -> Result<()> {
     println!("xtask v{current_version} — recherche d'une mise à jour sur {owner}/{name}...");
 
     let target = self_update::get_target();
-    
-    // Gère Windows (.exe) vs Linux/macOS
+
     let bin_name_ext = if cfg!(windows) {
         format!("{BIN_NAME}.exe")
     } else {
         BIN_NAME.to_string()
     };
 
-    // Teste sans le préfixe de sous-dossier OU avec `./` selon le comportement de tar
     let bin_path = format!("{BIN_NAME}-{target}/{bin_name_ext}");
-
     let current_exe = std::env::current_exe().context("impossible de localiser le binaire courant")?;
-    let temp_install_path = temp_install_path(&current_exe)?;
 
-    let status = self_update::backends::github::Update::configure()
+    let updater = self_update::backends::github::Update::configure()
         .repo_owner(owner)
         .repo_name(name)
-        .bin_name(&bin_name_ext) // <--- Utilise l'extension .exe sur Windows
-        .bin_path_in_archive(&bin_path)
-        .bin_install_path(&temp_install_path)
+        .bin_name(&bin_name_ext)
         .show_download_progress(true)
         .no_confirm(yes)
         .current_version(current_version)
         .build()
-        .context("échec de la configuration de self_update")?
-        .update()
-        .context("échec de la mise à jour")?;
+        .context("échec de la configuration de self_update")?;
 
-    replace_binary(&temp_install_path, &current_exe).with_context(|| {
+    let releases = updater
+        .get_latest_releases(&current_version)
+        .context("échec de récupération des releases")?;
+
+    let release = releases.first().cloned().context("aucune release compatible n'a été trouvée")?;
+    let target_asset = release
+        .asset_for(&target, None)
+        .context("aucun asset de release compatible n'a été trouvé")?;
+    let download_url = format!(
+        "https://github.com/{owner}/{name}/releases/download/v{}/{}",
+        release.version,
+        target_asset.name
+    );
+
+    let temp_dir = std::env::temp_dir().join(format!(
+        "xtask-update-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir)?;
+
+    let archive_path = temp_dir.join(&target_asset.name);
+    let mut archive_file = fs::File::create(&archive_path)?;
+
+    println!("Downloading...");
+    let mut download = self_update::Download::from_url(&download_url);
+    let headers = updater.api_headers(&updater.auth_token())?;
+    download.set_headers(headers);
+    download.download_to(&mut archive_file)?;
+    drop(archive_file);
+
+    println!("Extracting archive...");
+    extract_archive_file(&archive_path, &temp_dir, &bin_path)?;
+
+    let new_exe = temp_dir.join(&bin_path);
+    install_and_replace(&new_exe, &current_exe).with_context(|| {
         format!(
             "impossible de remplacer le binaire courant {} avec {}",
             current_exe.display(),
-            temp_install_path.display()
+            new_exe.display()
         )
     })?;
 
-    let _ = fs::remove_file(&temp_install_path);
-
-    match status {
-        self_update::Status::UpToDate(v) => println!("déjà à jour (v{v})"),
-        self_update::Status::Updated(v) => {
-            println!("mis à jour vers v{v} — relance `cargo xtask --version` pour vérifier");
-        }
-    }
+    println!(
+        "mis à jour vers v{} — relance `cargo xtask --version` pour vérifier",
+        release.version
+    );
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{replace_binary, temp_install_path};
+    use super::replace_binary;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::{
         fs,
-        path::Path,
+        io::Write,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -178,9 +253,23 @@ mod tests {
     }
 
     #[test]
-    fn temp_install_path_uses_a_sibling_file() {
-        let current_exe = Path::new("/tmp/cargo-xtask");
-        let temp_path = temp_install_path(current_exe).unwrap();
-        assert_eq!(temp_path, Path::new("/tmp/cargo-xtask.new"));
+    fn extract_archive_file_reads_tar_xz_entries() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "xtask-updater-archive-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let archive_path = temp_dir.join("archive.tar.xz");
+        let archive_file = fs::File::create(&archive_path).unwrap();
+        let mut archived = std::io::BufWriter::new(archive_file);
+        archived.write_all(b"not a real tar.xz archive").unwrap();
+        drop(archived);
+
+        let result = super::extract_archive_file(&archive_path, &temp_dir, "nested/bin");
+        assert!(result.is_err());
     }
 }

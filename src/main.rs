@@ -20,6 +20,17 @@ fn main() {
         args.remove(1);
     }
 
+    if args.get(1).map(String::as_str) == Some("self-update-helper") {
+        let source = args.get(2).cloned().unwrap_or_default();
+        let destination = args.get(3).cloned().unwrap_or_default();
+        let _ = std::fs::remove_file(&destination);
+        if let Err(err) = std::fs::rename(&source, &destination) {
+            eprintln!("erreur: impossible de remplacer le binaire: {err:#}");
+            exit(1);
+        }
+        std::process::exit(0);
+    }
+
     let cli = Cli::parse_from(args);
     let root = cli.root.clone();
 
