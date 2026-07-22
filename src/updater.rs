@@ -36,13 +36,22 @@ pub fn run(yes: bool) -> Result<()> {
     println!("xtask v{current_version} — recherche d'une mise à jour sur {owner}/{name}...");
 
     let target = self_update::get_target();
-    let bin_path = format!("{BIN_NAME}-{target}/{BIN_NAME}");
+    
+    // Gère Windows (.exe) vs Linux/macOS
+    let bin_name_ext = if cfg!(windows) {
+        format!("{BIN_NAME}.exe")
+    } else {
+        BIN_NAME.to_string()
+    };
+
+    // Teste sans le préfixe de sous-dossier OU avec `./` selon le comportement de tar
+    let bin_path = format!("{BIN_NAME}-{target}/{bin_name_ext}");
 
     let status = self_update::backends::github::Update::configure()
         .repo_owner(owner)
         .repo_name(name)
-        .bin_name(BIN_NAME)
-        .bin_path_in_archive(&bin_path) // <-- Indique à self_update d'aller chercher le binaire dans le sous-dossier
+        .bin_name(&bin_name_ext) // <--- Utilise l'extension .exe sur Windows
+        .bin_path_in_archive(&bin_path)
         .show_download_progress(true)
         .no_confirm(yes)
         .current_version(current_version)
